@@ -1,0 +1,168 @@
+poistna_zmluva TABLE
+
++------+-----------+-----------+-------------+------------+--------------+----------------------+--------------+---------------+---------------+--------------+----------+
+|  id  | cislo_pz  | stav_id   | poistnik_id | produkt_id | poistovna_id |    datum_zaciatku    | tech_kal_rok | rocne_poistne | zdroj_obchodu | bd_is_active | poznamka |
++------+-----------+-----------+-------------+------------+--------------+----------------------+--------------+---------------+---------------+--------------+----------+
+|  1   | 101001    |    1      |    10875    |     7      |      9       | 17. 11. 2023 0:00:00 |     2        |    1480.67    |     13        |      1       |          |
++------+-----------+-----------+-------------+------------+--------------+----------------------+--------------+---------------+---------------+--------------+----------+
+|  2   | 101002    |    1      |    10584    |     4      |      7       | 29. 03. 2024 0:00:00 |     2        |    980.45     |     2         |      1       | poznamka |...
++------+-----------+-----------+-------------+------------+--------------+----------------------+--------------+---------------+---------------+--------------+----------+
+
+
+pz_predmet_map TABLE (MANY TO MANY RELASHIONSHIP)  -- typ_id: 1=osoba(person), 2=auto(car), 3=adresa(adress), objekt_id: id v jednotlivych tabulkach klientov, vozidiel, adries (id in individual tables of clients, vehicles, addresses)
+
++------+--------+----------+-----------+-----------+
+|  id  | pz_id  | typ_id   | objekt_id | is_active |
++------+--------+----------+-----------+-----------+
+|  1   |   1    |    1     |   10548   |     1     |
++------+--------+----------+-----------+-----------+
+|  2   |   1    |    2     |     54    |     1     |
++------+--------+----------+-----------+-----------+
+|  3   |   2    |    1     |    172    |     1     |
++------+--------+----------+-----------+-----------+
+
+
+... + 9 OSTATNÝCH TABULIEK // + 9 OTHER TABLES 
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	SQL VIEW S VNORENÝM JSON VÝSTUPOM, VÝPOČET DÁTUMU VÝROČIA ZMLUVY, SPOJENIE 11 TABULIEK (ONE-TO-MANY AND MANY-TO-MANY VZŤAHY)
+	SQL VIEW WITH NESTED JSON OUTPUT, CALCULATION OF THE CONTRACT ANNIVERSARY DATE, JOINING 11 TABLES (ONE-TO-MANY AND MANY-TO-MANY RELATIONSHIP)
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+WITH anniversary_date AS (
+    SELECT
+        pz.id,
+        pz.datum_zaciatku,
+        pz.stav_id,
+        pz.tech_kal_rok,
+        CASE 
+            -- ak je stornovana, vyrocny den sa nevypocitava  // -- if canceled, the anniversary day is not calculated
+            WHEN pz.stav_id = 2 THEN NULL
+            -- ak je nastaveny kalendarny rok, vyrocny den je 1.1. nasledujuceho roku  //  -- if the calendar year is set, the anniversary day is 1.1. of the following year
+            WHEN pz.tech_kal_rok = 1 THEN date_trunc('year', CURRENT_DATE + interval '1 year')
+            ELSE 
+                CASE 
+                	-- ak vyrocny den pripada na 29.2., zapise sa ako 28.2. + rok podla podmienok  // -- if the anniversary falls on 29.2., it is written as 28.2. + year according to the conditions
+                    WHEN (date_part('day', pz.datum_zaciatku) = 29 AND date_part('month', pz.datum_zaciatku) = 2) 
+                        THEN 
+                            CASE
+                             -- ak je terajsi datum vacsi ako den a mesiac na zmluve, vyrocny den sa vypocita ako pz.den, pz.mesiac, nasledujuci rok // presvihol sa datum
+			     -- if the current date is greater than the day and month on the contract, the anniversary day is calculated as the next day, next month, next year // the date has been exceeded
+                                WHEN to_date(CONCAT('28', '-02-', date_part('year', CURRENT_DATE)), 'DD-MM-YYYY') <= CURRENT_DATE 
+                                    THEN to_date(CONCAT('28', '-02-', date_part('year', CURRENT_DATE + interval '1 year')), 'DD-MM-YYYY')
+                                ELSE to_date(CONCAT('28', '-02-', date_part('year', CURRENT_DATE)), 'DD-MM-YYYY')
+                            END
+                    ELSE
+                        CASE
+                            -- ak je terajsi datum vacsi ako den a mesiac na zmluve, vyrocny den sa vypocita ako pz.den, pz.mesiac, nasledujuci rok // presvihol sa datum
+			    -- if the current date is greater than the day and month on the contract, the anniversary day is calculated as the day, month, next year // the date has been exceeded
+                            WHEN to_date(CONCAT(date_part('day', pz.datum_zaciatku) , '-' , date_part('month', pz.datum_zaciatku), '-' ,date_part('year', CURRENT_DATE)), 'DD-MM-YYYY') <= CURRENT_DATE 
+                                THEN to_date(CONCAT(date_part('day', pz.datum_zaciatku), '-', date_part('month', pz.datum_zaciatku), '-', date_part('year', CURRENT_DATE + interval '1 year')), 'DD-MM-YYYY')
+                            -- ak je terajsi datum mensi ako den a mesiac na zmluve, vyrocny den sa vypocita ako pz.den, pz.mesiac, tento rok // stihaju prerobit zmluvu este tento rok
+			    -- if the current date is less than the day and month on the contract, the anniversary date is calculated as pz.day, pz.month, this year // they have time to redo the contract this year
+                            WHEN to_date(CONCAT(date_part('day', pz.datum_zaciatku) , '-' , date_part('month', pz.datum_zaciatku), '-' , date_part('year', CURRENT_DATE)), 'DD-MM-YYYY') > CURRENT_DATE 
+                                THEN to_date(CONCAT(date_part('day', pz.datum_zaciatku), '-', date_part('month', pz.datum_zaciatku), '-', date_part('year', CURRENT_DATE)), 'DD-MM-YYYY')
+                            ELSE to_date(CONCAT(date_part('day', pz.datum_zaciatku), '-', date_part('month', pz.datum_zaciatku), '-', date_part('year', CURRENT_DATE)), 'DD-MM-YYYY')
+                        END
+                END
+        END AS vyrocny_den
+    FROM poistna_zmluva pz
+)
+SELECT
+      pz.*,
+      json_agg(DISTINCT(poisteny)) FILTER (WHERE poisteny.id IS NOT NULL) poistene_osoby,
+      array_agg(to_json(auto)) FILTER (WHERE auto.id IS NOT NULL) poistene_auta,
+      array_agg(to_json(budova)) FILTER (WHERE budova.id IS NOT NULL) poistene_budovy,
+      json_agg(DISTINCT(subory)) FILTER (WHERE subory.id IS NOT NULL) file_path,
+      klient.meno AS poistnik_meno,
+      TRIM(CONCAT(klient.priezvisko, ' ', klient.meno, ' ',  klient.titul)) AS poistnik,
+      TRIM(CONCAT(klient.ulica, ' ', klient.supisne_cislo, ', ',  klient.psc, ' ', klient.mesto)) AS poistnik_adresa,
+      NULLIF (klient.mobil, klient.telefon) AS poistnik_telefon,
+      klient.email AS poistnik_email,
+      klient.rc_ico AS poistnik_rc_ico,
+      poistovna.skratka AS poistovna_skratka,
+      produkt.nazov AS produkt_nazov,
+      u.login AS user_login,
+      ad.vyrocny_den
+FROM poistna_zmluva pz
+-- mapovacia tabulka many-to-many // -- map table many-to-many
+INNER JOIN
+  (SELECT * FROM pz_predmet_map) map ON map.pz_id = pz.id
+LEFT JOIN
+  (SELECT id, priezvisko, meno, rc_ico, ulica, supisne_cislo, mesto FROM klient) poisteny ON map.objekt_id = poisteny.id AND map.typ_id = 1
+LEFT JOIN
+  (SELECT id, spz, vin  FROM predmet_poistenia_auto) auto ON map.objekt_id = auto.id AND map.typ_id = 2
+LEFT JOIN
+  (SELECT id, bd_ulica, bd_supisne_cislo, bd_mesto, bd_psc FROM predmet_poistenia_adresa) budova ON map.objekt_id = budova.id AND map.typ_id = 3 
+LEFT JOIN
+  (SELECT id, pz_id, file_name, file_path  FROM pz_files_map) subory ON subory.pz_id = pz.id
+LEFT JOIN klient klient ON pz.poistnik_id = klient.id
+LEFT JOIN enum_poistovna poistovna ON pz.poistovna_id = poistovna.id
+LEFT JOIN enum_produkt produkt ON pz.produkt_id = produkt.id
+LEFT JOIN users u ON pz.zdroj_obchodu = u.id
+LEFT JOIN anniversary_date ad ON pz.id = ad.id
+WHERE pz.bd_is_active = 1 OR pz.bd_is_active IS NULL
+GROUP BY
+    pz.id, klient.titul, klient.meno, klient.priezvisko, klient.rc_ico, klient.ulica, klient.supisne_cislo, klient.psc, klient.mesto, klient.mobil, klient.telefon, klient.email, poistovna.skratka, produkt.nazov, user_login, ad.vyrocny_den
+ORDER BY datum_dojednania DESC, id DESC;
+
+
+----------
+OUTPUT:
+----------
+
+[
+	[
+		{
+			"id": 1,
+			"cislo_pz": "101001 ",
+			"stav_id": 1,
+			"produkt_id": 7,
+			"datum_zaciatku": "2023-11-17T00:00:00.000Z",
+			"datum_storna": null,
+			"datum_dojednania": "2023-11-15T00:00:00.000Z",
+			"vyrocny_den": "2025-11-15T00:00:00.000Z",
+			"tech_kal_rok": 2,
+			"rocne_poistne": "1480.67",
+			"poistovna_id": 9,
+			"zdroj_obchodu": 13,
+			"poznamka": null,
+			"poistnik_id": 10548,
+			"poistnik_rc_ico": "1112223333",
+			"bd_is_active": 1,
+			"poistnik_meno": "Meno",
+			"poistnik": "Priezvisko Meno Ing.",
+			"poistnik_adresa": "Trenčín 24, 91108 Trenčín",
+			"poistnik_telefon": "+42190236506",
+			"poistnik_email": "meno.priezvisko@gmail.com",
+			"poistovna_skratka": "Allianz",
+			"produkt_nazov": "KASKO",
+			"user_login": ada.babalova,
+			"poistene_osoby": [
+				{
+					"id": 10548,
+					"priezvisko": "Priezvisko",
+					"meno": "Meno",
+					"rc_ico": "1112223333",
+					"ulica": "Ulica",
+					"supisne_cislo": "24",
+					"mesto": "Trenčín"
+				}
+			],
+			"poistene_auta":  [
+				{
+					"id": 54,
+					"spz": "TNSPZSK",
+					"vin": "DGRRF5654S456F",
+					"rc_ico": "1112223333",
+					"ulica": "Ulica",
+					"supisne_cislo": "24",
+					"mesto": "Trenčín"
+				}
+			],
+			"poistene_budovy": null,
+			"file_path": null
+		},
+	], 1
+]
