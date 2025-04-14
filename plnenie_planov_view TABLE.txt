@@ -1,0 +1,224 @@
+plnenie_planov TABLE
+
++------+-------+---------+----------+----------+---------+-----------------+--------------+
+|  id  | year  | month   | plan_eur | plan_pcs | user_id |   product_id    | bd_is_active |
++------+-------+---------+----------+----------+---------+-----------------+--------------+
+|  1   | 2025  |   1     |  1200    |   12     |   3     |       7         |       1      |
++------+-------+---------+----------+----------+---------+-----------------+--------------+
+|  2   | 2025  |   2     |  1200    |   12     |   3     |       7         |       1      |
++------+-------+---------+----------+----------+---------+-----------------+--------------+
+|  3   | 2025  |   3     |  1200    |   12     |   3     |       7         |       1      |
++------+-------+---------+----------+----------+---------+-----------------+--------------+
+...
++------+-------+---------+----------+----------+---------+-----------------+--------------+
+|  13  | 2025  |   1     |  1800    |   18     |   8     |       3         |       1      |
++------+-------+---------+----------+----------+---------+-----------------+--------------+
+|  14  | 2025  |   2     |  1800    |   18     |   8     |       3         |       1      |
++------+-------+---------+----------+----------+---------+-----------------+--------------+ 
+...
+
+
+poistna_zmluva TABLE
+
++------+-----------+-----------+-------------+------------+--------------+----------------------+--------------+---------------+---------------+--------------+----------+
+|  id  | cislo_pz  | stav_id   | poistnik_id | produkt_id | poistovna_id |    datum_zaciatku    | tech_kal_rok | rocne_poistne | zdroj_obchodu | bd_is_active | poznamka |
++------+-----------+-----------+-------------+------------+--------------+----------------------+--------------+---------------+---------------+--------------+----------+
+|  1   | 101001    |    1      |    10875    |     7      |      9       | 17. 11. 2023 0:00:00 |     2        |    1480.67    |     13        |      1       |          |
++------+-----------+-----------+-------------+------------+--------------+----------------------+--------------+---------------+---------------+--------------+----------+
+|  2   | 101002    |    1      |    10584    |     4      |      7       | 29. 03. 2024 0:00:00 |     2        |    980.45     |     2         |      1       | poznamka |...
++------+-----------+-----------+-------------+------------+--------------+----------------------+--------------+---------------+---------------+--------------+----------+
+...
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+	SQL VIEW S VÝPOČTOM PLNENIA PLÁNU Z TABULKY poistna_zmluva[rocne_poistne] NA JEDNOTLIVÉ MESIACE A POUŽÍVATEĽA, PODĽA POŽADOVANÝCH PODMIENOK   	
+	SQL VIEW WITH CALCULATION OF PLAN FULFILLMENT FROM TABLE poistna_zmluva[rocne_poistne] FOR INDIVIDUAL MONTHS AND USER, ACCORDING TO THE REQUIRED CONDITIONS
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+SELECT 
+     p.id
+   , p.year
+   , p.month
+   , p.plan_eur
+   , p.plan_pcs
+   , u.login AS zamestnanec
+   , pd.nazov AS produkt
+   , ROUND(SUM(DISTINCT 
+      CASE
+        -- -------- ked je poistovna 5 alebo 19, pocita sa cele rocne_poistne
+        WHEN z.poistovna_id IN (5, 19) THEN z.rocne_poistne
+        -- -------- ked je produkt 20, pocita sa cele rocne_poistne z info_poistne_PZP + kratene o -8% z info_poistne_KASKO, inak sa pocita kratene z.rocne_poistne
+        WHEN z.produkt_id = 20 AND z."info_poistne_KASKO" IS NOT NULL AND z."info_poistne_PZP" IS NOT NULL THEN
+        z."info_poistne_PZP" + (z."info_poistne_KASKO" / 108 * 100) 	
+        -- -------- ked je produkt 21, 13 alebo 11, pocita sa cele rocne_poistne
+        WHEN z.produkt_id IN (21, 13, 11) THEN
+          CASE
+          	WHEN z.produkt_id = 21 OR z.produkt_id = 13 THEN z.rocne_poistne
+            -- -------- ale ked je produkt 11, pocita sa cele rocne_poistne len ked  je frekvencia_platenia rocne, 
+            -- alebo ked je frekvencia_platenia polrocne resp. stvrtrocne, pocita sa rocne_poistne len ak je vacsie ako 200 EUR !! alebo cislo ramcovej zmluvy je uvedene
+            WHEN z.produkt_id = 11 AND z.cislo_rpz IS NOT NULL THEN z.rocne_poistne
+            WHEN z.produkt_id = 11 AND (z.frekvencia_platenia = 1 OR (z.frekvencia_platenia IN (2, 4) AND z.rocne_poistne > 200)) THEN z.rocne_poistne
+            ELSE 0
+          END
+        -- vo vsetkych ostatnych pripadoch je rocne_poistne kratene o -8%
+        -- vypocet z.rocne_poistne / 108 * 100
+        ELSE (z.rocne_poistne / 108) * 100
+      END)
+      , 2) AS total_sum_rocne_poistne
+FROM 
+  public.plnenie_planov p
+LEFT JOIN 
+    public.poistna_zmluva z 
+    ON  EXTRACT(YEAR FROM z.datum_zaciatku) = p.year 
+    AND EXTRACT(MONTH FROM z.datum_zacaitku) = p.month
+    AND p."userId" = z.zdroj_obchodu
+    AND p."produktId" = z.produkt_id
+LEFT JOIN
+    public.users u
+    ON p."userId" = u.id
+LEFT JOIN public.enum_produkt pd
+    ON p."produktId" = pd.id
+WHERE 
+  p.bd_is_active = 1
+GROUP BY 
+  p.id, p.year, p.month, p.plan_eur, p.plan_pcs, u.login, pd.nazov;
+
+
+
+
+----------
+OUTPUT:
+----------
+
+id   |  year | month | plan_eur| plan_pcs| zamestnanec| nazov| total_sum_rocne_poistne |
+
+613	2025	 1	6500	  65	  ada.babalova	KASKO	  4578.45
+614	2025	 2	6500	  65	  ada.babalova	KASKO	  6800.00
+615	2025	 3	6500	  65	  ada.babalova	KASKO	  3516.87
+616	2025	 4	6500	  65	  ada.babalova	KASKO	  7983.54
+
+
+
+
+
+
+------------------
+POUŽITIE: // USE:
+------------------
+
+TRANSPONOVAŤ MESIACE DO STĹPCOV V JASPER REPORT DATASET & QUERY EDITOR
+TRANSPOSE MONTHS INTO COLUMNS IN JASPER REPORT DATASET & QUERY EDITOR
+---------------------------------------------------------------------
+
+SELECT 
+    year,
+    zamestnanec,
+    produkt,
+    SUM(CASE WHEN month = 1 THEN plan_eur ELSE 0 END) AS Jan_plan_eur,
+    SUM(CASE WHEN month = 1 THEN total_sum_rocne_poistne ELSE 0 END) AS Jan_total_sum,
+    SUM(CASE WHEN month = 2 THEN plan_eur ELSE 0 END) AS Feb_plan_eur,
+    SUM(CASE WHEN month = 2 THEN total_sum_rocne_poistne ELSE 0 END) AS Feb_total_sum,
+    SUM(CASE WHEN month = 3 THEN plan_eur ELSE 0 END) AS Mar_plan_eur,
+    SUM(CASE WHEN month = 3 THEN total_sum_rocne_poistne ELSE 0 END) AS Mar_total_sum,
+    SUM(CASE WHEN month = 4 THEN plan_eur ELSE 0 END) AS Apr_plan_eur,
+    SUM(CASE WHEN month = 4 THEN total_sum_rocne_poistne ELSE 0 END) AS Apr_total_sum,
+    SUM(CASE WHEN month = 5 THEN plan_eur ELSE 0 END) AS May_plan_eur,
+    SUM(CASE WHEN month = 5 THEN total_sum_rocne_poistne ELSE 0 END) AS May_total_sum,
+    SUM(CASE WHEN month = 6 THEN plan_eur ELSE 0 END) AS Jun_plan_eur,
+    SUM(CASE WHEN month = 6 THEN total_sum_rocne_poistne ELSE 0 END) AS Jun_total_sum,
+    SUM(CASE WHEN month = 7 THEN plan_eur ELSE 0 END) AS Jul_plan_eur,
+    SUM(CASE WHEN month = 7 THEN total_sum_rocne_poistne ELSE 0 END) AS Jul_total_sum,
+    SUM(CASE WHEN month = 8 THEN plan_eur ELSE 0 END) AS Aug_plan_eur,
+    SUM(CASE WHEN month = 8 THEN total_sum_rocne_poistne ELSE 0 END) AS Aug_total_sum,
+    SUM(CASE WHEN month = 9 THEN plan_eur ELSE 0 END) AS Sep_plan_eur,
+    SUM(CASE WHEN month = 9 THEN total_sum_rocne_poistne ELSE 0 END) AS Sep_total_sum,
+    SUM(CASE WHEN month = 10 THEN plan_eur ELSE 0 END) AS Oct_plan_eur,
+    SUM(CASE WHEN month = 10 THEN total_sum_rocne_poistne ELSE 0 END) AS Oct_total_sum,
+    SUM(CASE WHEN month = 11 THEN plan_eur ELSE 0 END) AS Nov_plan_eur,
+    SUM(CASE WHEN month = 11 THEN total_sum_rocne_poistne ELSE 0 END) AS Nov_total_sum,
+    SUM(CASE WHEN month = 12 THEN plan_eur ELSE 0 END) AS Dec_plan_eur,
+    SUM(CASE WHEN month = 12 THEN total_sum_rocne_poistne ELSE 0 END) AS Dec_total_sum
+FROM 
+    public.plnenie_planov_view
+WHERE
+    '$P!{ROK}' = year   				-- // parameter pri vytváraní reportu (parameter when creating a report)
+    AND '$P!{LoggedInUsername}' = zamestnanec
+GROUP BY 
+     zamestnanec, produkt, year;
+
+
+
+
+
+
+
+
+TRNASPONOVAŤ MESIACE DO STĹPCOV V METÓDACH VUE KOMPONENTU A ZOBRAZIŤ ÚDAJE V JEDNOTLIVÝCH TABUĽKÁCH PRE KAŽDÉHO POUŽÍVATEĽA
+TRANSPOSE MONTHS TO COLUMNS IN VUE COMPONENT METHODS AND SHOW VALUES IN INDIVIDUAL TABLES FOR EACH USER
+---------------------------------------------------------------------------------------------------------
+
+ getData() {
+      axios
+        .get(`${this.apiLink}?year=${this.year}`, {
+          withCredentials: true,
+        })
+        .then((response) => {
+          this.backendData = response.data;
+          this.processData();
+        })
+        .catch((error) => {
+          console.error(error);
+        });
+    },
+
+    processData() {
+      const userData = {};
+
+      this.backendData.forEach((item) => {
+        if (!item.user || !item.produkt) {
+          console.warn(
+            'Skipping item due to missing user or produkt data:',
+            item
+          );
+          return;
+        }
+
+        const userLogin = item.user.login;
+        const productName = item.produkt.nazov || `Produkt ${item.produkt.id}`;
+
+        if (!userData[userLogin]) {
+          userData[userLogin] = [];
+        }
+
+        let productEntry = userData[userLogin].find(
+          (entry) => entry.product_name === productName
+        );
+
+        if (!productEntry) {
+          productEntry = {
+            product_name: productName,
+            total_eur: 0,
+            total_pcs: 0,
+            zam_id: item.user.id,
+            produkt_id: item.produkt.id,
+          };
+          userData[userLogin].push(productEntry);
+        }
+
+        const monthName = new Date(item.year, item.month - 1)
+          .toLocaleString('en-GB', { month: 'long' })
+          .toLowerCase();
+
+        const planEur = parseFloat(item.plan_eur) || 0;
+        const planPcs = parseInt(item.plan_pcs, 10) || 0;
+
+        productEntry[monthName] = planEur;
+        productEntry[`${monthName}_pcs`] = planPcs;
+
+        // Update totals
+        productEntry.total_eur += planEur;
+        productEntry.total_pcs += planPcs;
+      });
+
+      this.userData = userData;
+    },
+
